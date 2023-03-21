@@ -1,0 +1,724 @@
+---
+params: 
+  title: ""
+  publication_date: ""
+  doi: ""
+  github: ""
+  lang: ""
+output:
+    html_document:
+      anchor_sections: false
+      theme: null
+      highlight: null
+      mathjax: null
+      css: ["style.css", "https://fonts.googleapis.com/css?family=Source+Sans+Pro:400,700&display=swap"]
+      self_contained: true
+# To produce Word output, just comment the output lines above and uncomment
+# the ones here.
+# output: word_document
+# always_allow_html: yes
+title: "`r params$title`"
+---
+
+```{r general-setup, include=FALSE}
+## This file contains the ENGLISH version of the data story
+
+# Set general chunk options
+knitr::opts_chunk$set(
+  echo = FALSE, fig.showtext = TRUE, fig.retina = 3,
+  fig.align = "center", warning = FALSE, message = FALSE
+)
+
+# Install snf.datastory package if not available, otherwise load it
+if (!require("snf.datastory")) {
+  if (!require("devtools")) {
+    install.packages("devtools")
+    library(devtools)
+  }
+  install_github("snsf-data/snf.datastory")
+  library(snf.datastory)
+}
+
+# Load packages
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(conflicted)
+library(jsonlite)
+library(patchwork)
+library(here)
+library(glue)
+library(ggiraph)
+
+# Conflict preferences
+conflict_prefer("filter", "dplyr")
+conflict_prefer("get_datastory_theme", "snf.datastory")
+conflict_prefer("get_datastory_scheme", "snf.datastory")
+
+# Increase showtext package font resolution
+showtext_opts(dpi = 320)
+
+# Set the locale for date formatting (Windows)
+if (Sys.info()[["sysname"]] == "Windows") Sys.setlocale("LC_TIME", "English")
+
+# Set the language for this rmd for translate function
+lang <- "en"
+
+# Create function to print number with local language-specific format
+print_num <- function(x) snf.datastory::print_num(x, lang = lang)
+
+# Knitr hook for local formatting of printed numbers
+knitr::knit_hooks$set(
+  inline = function(x) {
+    if (!is.numeric(x)) {
+      x
+    } else {
+      print_num(x)
+    }
+  }
+)
+
+# Function that returns the desired language version of a string, given three
+# language strings are provided to the function 
+translate <- function(en_string = "NOT TRANSLATED",
+                      de_string = "NOT TRANSLATED",
+                      fr_string = "NOT TRANSLATED",
+                      lang = "en") {
+  string <- case_when(lang == "en" ~ en_string, 
+                      lang == "de" ~ de_string, 
+                      lang == "fr" ~ fr_string, 
+                      TRUE ~ "NO VALID LANGUAGE SPECIFIED")
+  string
+}
+```
+
+```{r print-header-infos, results='asis'}
+# Add publication date to header
+cat(format(as_datetime(params$publication_date), "%d.%m.%Y"))
+```
+
+
+```{r story-specific-setup, include=FALSE}
+# Load data about funding in 2022
+funding_in_2022 <- 
+  read_csv(here("data", "prelim_funding_in_2022_20230201.csv"))
+# Übergangsmassnahmen Horizon Europe
+# Get the amount going to Horizon Transitional Measures
+horizon_measures <- funding_in_2022 |> 
+  filter(str_detect(FundingInstrumentGaReporting, "Horizon")) |> 
+  summarise(sum_amount = sum(AmountGranted)) |> 
+  pull()
+
+# Total granted amount
+sum(funding_in_2022$AmountGranted)
+```
+
+
+<!-- Short lead (2-3 sentences) in bold -->
+
+**Initial preliminary figures: in 2022, the SNSF invested 912 million francs in new projects, fellowships and publications of its regular funding schemes; and a further 173 million under the Horizon Europe transitional measures.**
+
+More than 500 million francs went into project funding, in which experienced researchers investigate self-chosen topics. We approved around 180 million each for the work of research groups in programmes and for young researchers in career funding schemes.  
+
+Switzerland is not associated to Horizon Europe, the EU's framework programme for research and innovation. For this reason, the SNSF last year approved 173 million francs for projects conducted under its transitional measures. This includes the budget for the Eccellenza funding scheme, which was integrated into the transitional measures. These benefit both early-career researchers and established researchers. 
+
+Furthermore, the SNSF pays the universities more than 100 million francs as compensation for the indirect research costs (overhead) of the new projects. 
+
+By year-end 2022, we were funding 5500 projects involving approximately 20,000 researchers from higher education and other institutions. Most of the projects last several years. 
+
+The graphic shows a breakdown of approved funding by category. Because of the Horizon Europe transitional measures, the figures are only comparable to a limited extent with those of previous years. 
+
+<div class="hide-mobile hide-tablet" style="width: 800px;position: relative;max-width: 800px;left: -70px;border-top: 1px solid #d3d3d3;border-bottom: 1px solid #d3d3d3;padding-top: 20px;margin: 20px 0;">
+<div class="plot-box">
+<div class="plot-title">Approved SNSF grants in 2022 (preliminary figures)</div>
+```{r, out.width="100%", fig.height=2.5}
+# Color settings: Colors for the LVL 1 instruments are defined as in the
+# Data Portal (YAAY scheme)
+get_color_palette_lvl_1 <- function(lang) {
+  tibble(
+    FundingInstrumentGaLevel1 = c(
+      translate("Projects", "Projekte", "Projets", 
+                lang),
+      translate("Careers", "Karrieren", "Carrières", lang),
+      translate("Programmes", "Programme", "Programmes", lang),
+      translate("Infrastructure", "Infrastrukturen", "Infrastructures", lang),
+      translate("Science communication", "Wissenschaftskommunikation", 
+                "Communication scientifique", lang), 
+      translate("Horizon Europe Transitional Measures", 
+                "Übergangsmassnahmen Horizon Europe", 
+                "Mesures transitoires Horizon Europe", lang)
+    ),
+    # Use slightly adapted SNSF colors for this kind of plot
+    color_lvl1 = c("#3D7D9F", "#83D0F5", "#FBBE5E", "#71B294", "#9D90B9",
+                            "#3D7D9F")
+  )
+}
+
+# Function to preprocess the funding data and create summarized data objects
+# for the bar plot main bar and the bar that summarizes also the two programmes
+# components (general programmes + Horizon transition measures)
+preprocess_plot_data <- function(funding_data, lang, 
+                                 reverse_order = FALSE) {
+  # Mapping table for the translation of the Level 1 Funding Instruments
+  mapping_fi <- tibble(
+    en = c("Projects", "Careers", "Programmes", 
+           "Horizon Europe Transitional Measures", "Infrastructure", 
+           "Science communication"),
+    de = c("Projekte", "Karrieren", "Programme",
+           "Übergangsmassnahmen Horizon Europe", "Infrastrukturen", 
+           "Wissenschaftskommunikation"),
+    fr = c("Projets", "Carrières", "Programmes",
+           "Mesures transitoires Horizon Europe", 
+           "Infrastructures", "Communication scientifique")
+  ) %>% 
+    # Now choose the English string (to join and the destination lang string)
+    mutate(FundingInstrumentGaLevel1 = en) %>% 
+    select(FundingInstrumentGaLevel1, destination = any_of(lang))
+  
+  # Compile the text string to be displayed in the tooltip
+  tooltip_text <- funding_data %>% 
+    mutate(grouping_scheme = if_else(str_detect(FundingInstrumentGaLevel1, "Horizon Europe"), 
+                                     FundingInstrumentGa, 
+                                     FundingInstrumentGaReporting)) %>% 
+    group_by(FundingInstrumentGaLevel1, grouping_scheme) %>%
+    summarise(scheme_granted = sum(AmountGranted, na.rm = TRUE),
+              n = n()) %>% 
+    ungroup() %>% 
+    group_by(FundingInstrumentGaLevel1) %>% 
+    arrange(desc(scheme_granted)) %>% 
+    summarise(tooltip = paste0("<strong>", grouping_scheme, "</strong> (",
+                                translate("CHF ", 
+                                         "", 
+                                         "", 
+                                         lang), 
+                               # For smaller amounts, don't round down to zero
+                               if_else(scheme_granted < 50000, 
+                                       print_num(round(scheme_granted / 1000000, 
+                                                       digits = 2)), 
+                                       print_num(round(scheme_granted / 1000000, 
+                                                       digits = 1))), 
+                               
+                               translate(" million approved in ", 
+                                         " Mio. CHF zugesprochen in ", 
+                                         " mio CHF approuvés pour", 
+                                         lang), 
+                               print_num(n), 
+                               translate(" grants)",
+                                         " Beiträgen)",
+                                         " contributions)", 
+                                         lang)
+                               ,
+                               collapse = "<br>")) |> 
+    ungroup()
+  
+  # Helper function to reverse the order depending on an argument
+  order_data <- function(data, reverse_order = FALSE) {
+    if (reverse_order) {
+      data %>%
+        mutate(order = nrow(.) - row_number())
+    } else {
+      data %>%
+        mutate(order = row_number())
+    }
+  }
+  
+  # Prepare plot data, calculate frequencies of granted amounts per LVL 1 FI
+  # (Careers, Programmes...)
+  plot_data <- funding_data %>% 
+    group_by(FundingInstrumentGaLevel1) %>%
+    summarise(lvl_1_granted = sum(AmountGranted, na.rm = TRUE),
+              n = n()) %>%
+    # Get translated version of FundingInstrumentGaLevel1
+    left_join(mapping_fi, by = "FundingInstrumentGaLevel1") %>% 
+    # Add scheme-level tooltip text data
+    left_join(tooltip_text, by = "FundingInstrumentGaLevel1") %>% 
+    # Overwrite with the destination language string
+    mutate(FundingInstrumentGaLevel1 = destination) %>% 
+    mutate(lvl_1_freq = lvl_1_granted / sum(lvl_1_granted)) %>%
+    # Order the data for the plot: by LVL 1 share size
+    arrange(desc(lvl_1_freq)) %>%
+    order_data(reverse_order = reverse_order) %>%
+    # Now calculate where the segment has to start (and end) per LVL 1 FI
+    mutate(seg_start = map_dbl(order, function(x) {
+      prev_dist <- filter(., order < x) %>%
+        pull(lvl_1_granted) %>%
+        sum(na.rm = TRUE)
+      prev_dist
+    }),
+    seg_end = seg_start + lvl_1_granted)
+  
+  # Return the two data objects as list
+  return(plot_data)
+}
+
+# Function to draw the bar chart for desktops
+draw_funding_portfolio_5 <- function(lang = "en") {
+  ## Prepare the data for the plot
+  # Without Horizon
+  preproc_data <-
+    preprocess_plot_data(
+      funding_data = funding_in_2022 |> 
+        filter(!str_detect(FundingInstrumentGaReporting, "Horizon")), lang, 
+      reverse_order = FALSE) |>  
+    mutate(
+      type = 
+        translate(
+          "Regular SNSF funding instruments (CHF 912 million)",
+          "Reguläre Förderinstrumente (912 Mio. CHF)",
+          "Instruments d’encouragement réguliers du FNS (912  mio CHF)", 
+          lang)
+    ) |> 
+    # Add only Horizon
+    bind_rows(
+      preprocess_plot_data(
+        funding_data = funding_in_2022 |> 
+          filter(str_detect(FundingInstrumentGaReporting, "Horizon")), lang, 
+        reverse_order = FALSE) |>  
+        mutate(
+          type = 
+            translate(
+              "Horizon Europe transitional measures*",
+              "Übergangsmassnahmen Horizon Europe*",
+              "Mesures transitoires Horizon Europe*", 
+              lang)
+        )
+    )
+  
+  # Get manual color palette based on lang-specific values
+  color_palette_lvl1 <- get_color_palette_lvl_1(lang)
+  
+  # Create the plot
+  p_funding_portfolio_5 <- preproc_data %>%
+    filter(!str_detect(FundingInstrumentGaLevel1, "Horizon")) %>%
+    ggplot(aes(x = 1, y = lvl_1_granted,
+               fill = reorder(FundingInstrumentGaLevel1, -order), 
+               tooltip = tooltip)) +
+    geom_col_interactive(color = "white", width = 0.7) +
+    # Level 1 FI labels
+    # Bold text (FI and percentage)
+    geom_text(
+      aes(
+        x = if_else(lvl_1_granted < 30 * 10^6, 1.6, 2), 
+        y = seg_start,
+        label = FundingInstrumentGaLevel1, 
+        angle = if_else(lvl_1_granted < 30 * 10^6, 90, 0),
+        hjust = 0),
+      vjust = 1,
+      color = "#4d4d4d", family = "Source Sans Pro",
+      size = 2.75, fontface = "bold") +
+    # Plain text (amount)
+    geom_text(
+      aes(x = if_else(lvl_1_granted < 30 * 10^6, 1.375, 1.7),
+          y = if_else(lvl_1_granted < 30 * 10^6, seg_start + 0.018, seg_start),
+          label = 
+            if_else(
+              # Don't show amount for <30 mio, not enough space
+              lvl_1_granted < 30 * 10^6, 
+              "", 
+              paste0(translate("CHF ", 
+                                  "", 
+                                  "", 
+                                  lang),
+                        round((lvl_1_granted / 1000000)),
+                        translate(" million", 
+                                  " Mio. CHF", 
+                                  " mio CHF", 
+                                  lang)
+              )
+            ),
+          angle = if_else(lvl_1_granted < 30 * 10^6, 90, 0)),
+      vjust = 1,
+      hjust = 0,
+      color = "#4d4d4d", family = "Source Sans Pro",
+      size = 2.5, fontface = "plain") +
+    coord_flip() +
+    get_datastory_theme(remove_plot_margin = TRUE) + 
+    scale_fill_manual(
+      values = setNames(color_palette_lvl1$color_lvl1, 
+                        color_palette_lvl1$FundingInstrumentGaLevel1), 
+      guide = "none") +
+    scale_color_manual(
+      guide = "none",
+      values = get_datastory_scheme()
+    ) +
+    labs(x = NULL, y = NULL) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      panel.grid.major.x = element_blank(),
+    ) +
+    expand_limits(x = 3.5) +
+    facet_wrap(~type, ncol = 1) + 
+    theme(strip.text = element_text(hjust = 0))
+  
+  p_funding_portfolio_5
+  
+}
+
+# Create ggiraph object
+girafe(ggobj = draw_funding_portfolio_5(lang), 
+       height_svg = 2.5, 
+       options = list(
+         opts_toolbar(saveaspng = FALSE),
+         opts_hover(css = "fill:#F08262;stroke:#F08262;"),
+         opts_tooltip(
+           css = get_ggiraph_tooltip_css(),
+           opacity = 0.8,
+           delay_mouseover = 0,
+           delay_mouseout = 0
+         )
+       ))
+```
+
+```{r, out.width="100%", fig.height=1.5}
+
+# Function to draw the bar chart for desktops
+draw_funding_portfolio_5_horizon <- function(lang = "en") {
+  ## Prepare the data for the plot
+  # Without Horizon
+  preproc_data <-
+    preprocess_plot_data(
+      funding_data = funding_in_2022 |> 
+        filter(!str_detect(FundingInstrumentGaReporting, "Horizon")), lang, 
+      reverse_order = FALSE) |>  
+    mutate(
+      type = 
+        translate(
+          "Regular SNSF funding instruments (CHF 912 million)",
+          "Reguläre Förderinstrumente (912 Mio. CHF)",
+          "Instruments d’encouragement réguliers du FNS (912  mio CHF)",
+          lang)
+    ) |> 
+    # Add only Horizon
+    bind_rows(
+      preprocess_plot_data(
+        funding_data = funding_in_2022 |> 
+          filter(str_detect(FundingInstrumentGaReporting, "Horizon")), lang, 
+        reverse_order = FALSE) |>  
+        mutate(
+          type = 
+            translate(
+              "Horizon Europe transitional measures*",
+              "Übergangsmassnahmen Horizon Europe*",
+              "Mesures transitoires Horizon Europe*",
+              lang)
+        )
+    )
+  
+  # Get manual color palette based on lang-specific values
+  color_palette_lvl1 <- get_color_palette_lvl_1(lang)
+  
+  
+  p_funding_portfolio_5_horizon <-
+    preproc_data %>%
+    filter(str_detect(FundingInstrumentGaLevel1, "Horizon")) %>%
+    ggplot(aes(x = 0, y = lvl_1_granted,
+               fill = reorder(FundingInstrumentGaLevel1, -order), 
+               tooltip = tooltip)) +
+    geom_col_interactive(color = "white", width = 0.87) +
+    geom_text(
+      aes(x = 0.9,
+          y = if_else(lvl_1_granted < 30 * 10^6, seg_start + 0.018, seg_start),
+          label = 
+            paste0(translate("CHF ", 
+                             "", 
+                             "", 
+                             lang),
+                   round((lvl_1_granted / 1000000)),
+                   translate(" million", 
+                             " Mio. CHF", 
+                             " mio CHF", 
+                             lang)
+            )
+      ),
+      vjust = 1,
+      hjust = 0,
+      color = "#4d4d4d", family = "Source Sans Pro",
+      size = 2.5, fontface = "plain") +
+    coord_flip() +
+    get_datastory_theme(remove_plot_margin = TRUE) + 
+    scale_fill_manual(
+      values = setNames(color_palette_lvl1$color_lvl1, 
+                        color_palette_lvl1$FundingInstrumentGaLevel1), 
+      guide = "none") +
+    scale_color_manual(
+      guide = "none",
+      values = get_datastory_scheme()
+    ) +
+    labs(
+      x = NULL,
+      y = NULL,
+      caption =
+        translate(
+          "*Financed with additional funds from the federal government and funds from the career funding budget (Eccellenza scheme).",
+          "*Finanziert durch zusätzliche Mittel des Bundes und durch Mittel aus dem Budget der Karriereförderung (Instrument Eccellenza).", 
+          "*Financé par des fonds supplémentaires de la Confédération et par des fonds du budget d’encouragement de carrière (instrument Eccellenza).", 
+          lang)
+    ) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      panel.grid.major.x = element_blank(),
+    ) +
+    expand_limits(y = sum(preproc_data$lvl_1_granted[1:5]), x = 1.3) +
+    facet_wrap(~type, ncol = 1) +
+    theme(
+      strip.text = element_text(hjust = 0),
+      plot.caption = element_text(hjust = 0.04, face = "plain")
+    )
+  
+  p_funding_portfolio_5_horizon
+  
+}
+
+# Create ggiraph object
+girafe(ggobj = draw_funding_portfolio_5_horizon(lang), 
+       height_svg = 1.5, 
+       options = list(
+         opts_toolbar(saveaspng = FALSE),
+         opts_hover(css = "fill:#F08262;stroke:#F08262;"),
+         opts_tooltip(
+           css = get_ggiraph_tooltip_css(),
+           opacity = 0.8,
+           delay_mouseover = 0,
+           delay_mouseout = 0
+         )
+       ))
+```
+<div class="caption">
+Data: SNSF funding approved in 2022 (preliminary figures, as of 1 February 2023. Excluding compensation for indirect research costs incurred by higher education institutions and grants for open access journal articles).
+</div>
+</div>
+</div>
+
+<div class="hide-desktop">
+<div class="plot-box">
+<div class="plot-title">Approved SNSF grants in 2022 (preliminary figures)</div>
+```{r, out.width="100%", fig.width=3, fig.height=10}
+# Function to draw the bar chart for mobile devices
+draw_funding_portfolio_5_mob <- function(lang = "en") {
+  ## Prepare the data for the plot
+  # Without Horizon
+  preproc_data <-
+    preprocess_plot_data(
+      funding_data = funding_in_2022 |> 
+        filter(!str_detect(FundingInstrumentGaReporting, "Horizon")), lang, 
+      reverse_order = TRUE) |>  
+    mutate(
+      type =
+        translate(
+          "Regular SNSF funding instruments (CHF 912 million)",
+          "Reguläre Förderinstrumente (912 Mio. CHF)",
+          "Instruments d’encouragement réguliers du FNS (912  mio CHF)",
+          lang
+        )
+    ) |> 
+    # Add only Horizon
+    bind_rows(
+      preprocess_plot_data(
+        funding_data = funding_in_2022 |> 
+          filter(str_detect(FundingInstrumentGaReporting, "Horizon")), lang, 
+        reverse_order = TRUE) |>  
+        mutate(
+          type = 
+            translate(
+              "Horizon Europe transitional measures*",
+              "Übergangsmassnahmen Horizon Europe*",
+              "Mesures transitoires Horizon Europe*",
+              lang)
+        )
+    )
+  
+  # Get manual color palette based on lang-specific values
+  color_palette_lvl1 <- get_color_palette_lvl_1(lang)
+  
+  # Create the plot
+  p_funding_portfolio_5 <-
+    preproc_data %>%
+    filter(!str_detect(FundingInstrumentGaLevel1, "Horizon")) %>%
+    ggplot(aes(x = 1, y = lvl_1_granted,
+               fill = reorder(FundingInstrumentGaLevel1, -order), 
+               tooltip = tooltip)) +
+    geom_col_interactive(color = "white", width = 0.7) +
+    # Level 1 FI labels
+    # Bold text (FI and percentage)
+    geom_text(aes(x = 1.5,
+                  y = seg_end,
+                  label = if_else(
+                    str_detect(FundingInstrumentGaLevel1, "Horizon"), 
+                    str_wrap(FundingInstrumentGaLevel1, 25), 
+                    FundingInstrumentGaLevel1
+                  ), 
+                  hjust = 0),
+              vjust = 1,
+              lineheight = 0.75, 
+              color = "#4d4d4d", family = "Source Sans Pro",
+              size = 3, fontface = "bold") +
+    # Plain text (amount)
+    geom_text(aes(x = 1.5,
+                  y = if_else(str_detect(FundingInstrumentGaLevel1, "Horizon"), 
+                              seg_end - 70 * 10^6, 
+                              seg_end - 35 * 10^6),
+                  label = 
+                    if_else(
+                      # Don't show amount for <30 mio, not enough space
+                      lvl_1_granted < 30 * 10^6, 
+                      "", 
+                      paste0(
+                        translate("CHF ", 
+                                  "", 
+                                  "", 
+                                  lang),
+                        round((lvl_1_granted / 1000000)),
+                        translate(" million", 
+                                  " Mio. CHF", 
+                                  " mio CHF", 
+                                  lang)
+                      )
+                    )), 
+              vjust = 1,
+              hjust = 0,
+              color = "#4d4d4d", family = "Source Sans Pro",
+              size = 3, fontface = "plain") +
+    get_datastory_theme() + 
+    scale_fill_manual(
+      values = setNames(color_palette_lvl1$color_lvl1,
+                        color_palette_lvl1$FundingInstrumentGaLevel1),
+      guide = "none") +
+    scale_y_continuous(labels = function(x) { paste0(x / 10^6) },
+                       breaks = seq(0, 10^9, 2 *10^8)) +
+    scale_color_manual(
+      guide = "none",
+      values = setNames(color_palette_lvl1$color_lvl1,
+                        color_palette_lvl1$FundingInstrumentGaLevel1)
+    ) +
+    labs(x = NULL, y = NULL) +
+    theme(axis.text.x = element_blank(),
+          panel.grid.major.y = element_blank()) +
+    expand_limits(x = 4) + 
+    facet_wrap(~type, ncol = 1) + 
+    theme(strip.text = element_text(hjust = 0), 
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_line(color = "#d3d3d3", linewidth = 0.3))
+  
+  p_funding_portfolio_5_horizon <-
+    preproc_data %>%
+    filter(str_detect(FundingInstrumentGaLevel1, "Horizon")) %>%
+    ggplot(aes(x = 1, y = lvl_1_granted,
+               fill = reorder(FundingInstrumentGaLevel1, -order), 
+               tooltip = tooltip)) +
+    geom_col_interactive(color = "white", width = 0.7) +
+    # Level 1 FI labels
+    # Bold text (FI and percentage)
+    geom_text(aes(x = 1.5,
+                  y = seg_end,
+                  label = if_else(
+                    str_detect(FundingInstrumentGaLevel1, "Horizon"), 
+                    str_wrap(FundingInstrumentGaLevel1, 25), 
+                    FundingInstrumentGaLevel1
+                  ), 
+                  hjust = 0),
+              vjust = 1,
+              lineheight = 0.75, 
+              color = "#4d4d4d", family = "Source Sans Pro",
+              size = 3, fontface = "bold") +
+    # Plain text (amount)
+    geom_text(aes(x = 1.5,
+                  y = if_else(str_detect(FundingInstrumentGaLevel1, "Horizon"), 
+                              seg_end - 70 * 10^6, 
+                              seg_end - 35 * 10^6),
+                  label = 
+                    if_else(
+                      # Don't show amount for <30 mio, not enough space
+                      lvl_1_granted < 30 * 10^6, 
+                      "", 
+                      paste0(translate("CHF ", 
+                                  "", 
+                                  "", 
+                                  lang),
+                        round((lvl_1_granted / 1000000)),
+                        translate(" million", 
+                                  " Mio. CHF", 
+                                  " mio CHF", 
+                                  lang)
+                      )
+                    )), 
+              vjust = 1,
+              hjust = 0,
+              color = "#4d4d4d", family = "Source Sans Pro",
+              size = 3, fontface = "plain") +
+    get_datastory_theme() + 
+    scale_fill_manual(
+      values = setNames(color_palette_lvl1$color_lvl1,
+                        color_palette_lvl1$FundingInstrumentGaLevel1),
+      guide = "none") +
+    scale_y_continuous(labels = function(x) { paste0(x / 10^6) },
+                       breaks = seq(0, 10^9, 2 *10^8)) +
+    scale_color_manual(
+      guide = "none",
+      values = setNames(color_palette_lvl1$color_lvl1,
+                        color_palette_lvl1$FundingInstrumentGaLevel1)
+    ) +
+    labs(
+      x = NULL,
+      y = NULL,
+      caption =
+        translate(
+          str_wrap(
+            c(
+              "*Financed with additional funds from the federal government and funds from the career funding budget (Eccellenza scheme).",
+              "*Finanziert durch zusätzliche Mittel des Bundes und durch Mittel aus dem Budget der Karriereförderung (Instrument Eccellenza).", 
+              "*Financé par des fonds supplémentaires de la Confédération et par des fonds du budget d’encouragement de carrière (instrument Eccellenza)."
+            ),
+            width = 80
+          ), 
+          lang)
+    ) +
+    theme(axis.text.x = element_blank(),
+          panel.grid.major.y = element_blank()) +
+    expand_limits(x = 4) + 
+    facet_wrap(~type, ncol = 1) + 
+    theme(strip.text = element_text(hjust = 0), 
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_line(color = "#d3d3d3", linewidth = 0.3),
+          plot.caption = element_text(hjust = 0, face = "plain"))
+  
+  p_funding_portfolio_5  + p_funding_portfolio_5_horizon +
+    plot_layout(ncol = 1, heights = c(0.5, 0.173))
+}
+
+# Create ggiraph object
+girafe(ggobj = draw_funding_portfolio_5_mob(lang),
+       width_svg = 3,
+       height_svg = 10,
+       options = list(
+         opts_toolbar(saveaspng = FALSE),
+         opts_hover(css = "fill:#F08262;stroke:#F08262;"),
+         opts_tooltip(
+           css = get_ggiraph_tooltip_css(),
+           opacity = 0.8,
+           delay_mouseover = 0,
+           delay_mouseout = 0
+         )
+       ))
+```
+<div class="caption">
+Data: SNSF funding approved in 2022 (preliminary figures, as of 1 February 2023. Excluding compensation for indirect research costs incurred by higher education institutions and grants for open access journal articles).
+</div>
+</div>
+</div>
+
+Data, text and code of this data story are <a href="`r params$github`" target="_blank">available on Github</a> and <a href="`r params$doi`" target="_blank">archived on Zenodo</a>.<br>DOI: `r str_remove(params$doi, "https://doi.org/")`
+
+```{r prevent-internal-snsf-packages, include=FALSE}
+# Internal SNSF packages must not be used in data stories, as their
+# pre-processing functions are internal and the corporate design differs from
+# the data portal.
+if (any(c("snfverse", "snf.preprocessing", "snf.plot") %in% 
+        loadedNamespaces())) {
+  stop(glue(
+    "You must not use internal SNSF packages in data stories.",
+    " Please resort to snf.datastory."
+  ))
+}
+```
